@@ -1,0 +1,1622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI-Powered Interactive Jeopardy</title>
+    
+    <!-- React 17 -->
+    <script crossorigin src="https://unpkg.com/react@17/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@17/umd/react-dom.production.min.js"></script>
+    
+    <!-- Babel 7 -->
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- PapaParse for CSV imports -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+    
+    <!-- Canvas Confetti -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    
+    <style>
+        body {
+            background-color: #0b0f19;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            color: white;
+            overflow: hidden;
+            height: 100vh;
+            margin: 0;
+        }
+        #root { height: 100%; }
+
+        /* Custom Fonts & Effects */
+        .jeopardy-font {
+            font-family: 'Impact', 'Arial Black', sans-serif;
+            letter-spacing: 2px;
+            text-shadow: 3px 3px 6px #000;
+        }
+        .text-shadow { text-shadow: 2px 2px 2px black; }
+        .modal-overlay { background-color: rgba(3, 7, 18, 0.95); }
+        
+        /* Inputs styling */
+        input.team-input, input.edit-input, textarea.edit-input {
+            background: rgba(255, 255, 255, 0.95);
+            color: #0d1b2a;
+            border: 2px solid #eab308;
+            transition: all 0.2s;
+        }
+        input.team-input:focus, input.edit-input:focus, textarea.edit-input:focus {
+            outline: none;
+            box-shadow: 0 0 10px rgba(234, 179, 8, 0.5);
+            border-color: #facc15;
+        }
+        
+        /* Logo Glow Animation */
+        .logo-glow {
+            text-shadow: 0 0 10px #eab308, 0 0 20px #eab308, 0 0 30px #ca8a04;
+        }
+
+        /* Scrollbar Styling */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #0f172a; }
+        ::-webkit-scrollbar-thumb { background: #eab308; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #ca8a04; }
+
+        /* Winner Podium */
+        .podium-1 { height: 180px; background: linear-gradient(to top, #eab308, #ca8a04); border: 2px solid #fff; }
+        .podium-2 { height: 130px; background: linear-gradient(to top, #94a3b8, #475569); border: 2px solid #fff; }
+        .podium-3 { height: 90px; background: linear-gradient(to top, #b45309, #78350f); border: 2px solid #fff; }
+
+        @keyframes pulse-gold {
+            0%, 100% { border-color: #eab308; box-shadow: 0 0 5px rgba(234, 179, 8, 0.3); }
+            50% { border-color: #facc15; box-shadow: 0 0 15px rgba(250, 204, 21, 0.6); }
+        }
+        .ai-glow-border {
+            animation: pulse-gold 2s infinite;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+
+        // --- GEMINI API HELPER CONFIG ---
+        const apiKey = ""; // Set dynamically by environment or custom override field
+
+        const getActiveApiKey = () => {
+            return apiKey || window.GEMINI_API_KEY || localStorage.getItem('jeopardy_gemini_api_key') || '';
+        };
+
+        const getCustomAudioUrl = () => {
+            return localStorage.getItem('jeopardy_custom_audio_url') || 'http://googleusercontent.com/file_content/1';
+        };
+
+        const fetchWithRetry = async (url, options, retries = 5, delay = 1000) => {
+            try {
+                const response = await fetch(url, options);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return await response.json();
+            } catch (error) {
+                if (retries > 0) {
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    return fetchWithRetry(url, options, retries - 1, delay * 2);
+                }
+                throw error;
+            }
+        };
+
+        const callGeminiAPI = async (prompt, systemPrompt, expectedSchema) => {
+            const key = getActiveApiKey();
+            if (!key) {
+                throw new Error("No Gemini API key found. Please supply an API key in the Setup Settings Gear ⚙️.");
+            }
+            
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`;
+            const payload = {
+                contents: [{ parts: [{ text: prompt }] }],
+                systemInstruction: { parts: [{ text: systemPrompt }] },
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: expectedSchema
+                }
+            };
+
+            const data = await fetchWithRetry(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            });
+
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (!text) {
+                throw new Error("Empty response received from the AI service.");
+            }
+            return JSON.parse(text);
+        };
+
+        // --- AUDIO ENGINE ---
+        const playTone = (freq, type, duration) => {
+            try {
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = type;
+                osc.frequency.value = freq;
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+                osc.stop(audioCtx.currentTime + duration);
+            } catch (e) {
+                console.log("Audio Context blocked or unsupported.");
+            }
+        };
+
+        const playSound = (name) => {
+            switch(name) {
+                case 'correct':
+                    playTone(587.33, 'sine', 0.12); // D5
+                    setTimeout(() => playTone(880, 'sine', 0.25), 120); // A5
+                    break;
+                case 'wrong':
+                    playTone(180, 'sawtooth', 0.25);
+                    setTimeout(() => playTone(130, 'sawtooth', 0.35), 180);
+                    break;
+                case 'dailyDouble':
+                    [330, 440, 554, 659, 880].forEach((f, i) => {
+                        setTimeout(() => playTone(f, 'square', 0.12), i * 90);
+                    });
+                    break;
+                case 'win':
+                    const victoryChords = [523.25, 659.25, 783.99, 1046.50]; // C Major
+                    victoryChords.forEach((f, i) => {
+                        setTimeout(() => playTone(f, 'triangle', 0.3), i * 150);
+                    });
+                    break;
+            }
+        };
+
+        // Synthesized jeopardy think music helpers (fallback)
+        let activeSynthOscillators = [];
+        const playSequencedNote = (freq, type, duration, audioCtx) => {
+            if (freq === 0) return;
+            try {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = type;
+                osc.frequency.value = freq;
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+                osc.start();
+                gain.gain.setValueAtTime(0.12, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + duration);
+                osc.stop(audioCtx.currentTime + duration);
+                
+                const nodeRecord = { osc, gain };
+                activeSynthOscillators.push(nodeRecord);
+                setTimeout(() => {
+                    activeSynthOscillators = activeSynthOscillators.filter(item => item !== nodeRecord);
+                }, duration * 1000 + 100);
+            } catch (e) {
+                console.log("Synthesizer scheduling issue: ", e);
+            }
+        };
+
+        const stopThinkMusicSynthesizer = () => {
+            activeSynthOscillators.forEach(item => {
+                try {
+                    item.osc.stop();
+                    item.gain.disconnect();
+                } catch(e) {}
+            });
+            activeSynthOscillators = [];
+        };
+
+        // Classic simplified Jeopardy melody sequence
+        const jeopardyMelody = [
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 880.00, dur: 0.6 }, // A5
+            { note: 0, dur: 0.1 },      // Rest
+            
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 880.00, dur: 0.5 }, // A5
+            { note: 783.99, dur: 0.5 }, // G5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 0, dur: 0.1 },      // Rest
+
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 698.46, dur: 0.3 }, // F5
+            { note: 880.00, dur: 0.3 }, // A5
+            { note: 698.46, dur: 0.3 }, // F5
+
+            { note: 587.33, dur: 0.3 }, // D5
+            { note: 523.25, dur: 0.3 }, // C5
+            { note: 466.16, dur: 0.3 }, // Bb4
+            { note: 440.00, dur: 0.3 }, // A4
+            { note: 392.00, dur: 0.3 }, // G4
+            { note: 349.23, dur: 0.6 }, // F4
+            { note: 0, dur: 0.4 }       // Rest
+        ];
+
+        // --- BLANK BOARD BUILDER ---
+        const generateBlankTemplate = () => {
+            const categories = [];
+            for (let c = 1; c <= 5; c++) {
+                const questions = [];
+                for (let r = 1; r <= 5; r++) {
+                    const points = r * 100;
+                    questions.push({
+                        points: points,
+                        q: `This is your Question ${r} for Category ${c} (Value: $${points}). Click inside to edit.`,
+                        a: `Answer ${c}-${points}`,
+                        core: `Answer ${c}-${points}`,
+                        prefix: "What is"
+                    });
+                }
+                categories.push({
+                    category: `Category ${c}`,
+                    questions: questions
+                });
+            }
+            return {
+                id: 'default-blank-board',
+                title: "Template Jeopardy Board",
+                categories: categories,
+                finalJeopardy: {
+                    category: "Final Category Name",
+                    question: "This is the question prompt or riddle for Final Jeopardy. Edit it in the final tab.",
+                    core: "Final Answer",
+                    prefix: "What is"
+                }
+            };
+        };
+
+        const defaultGameData = generateBlankTemplate();
+
+        // --- STORAGE UTILS ---
+        const saveGameToStorage = (game) => {
+            const savedGames = JSON.parse(localStorage.getItem('jeopardy_games') || '[]');
+            const existingIndex = savedGames.findIndex(g => g.id === game.id);
+            if (existingIndex >= 0) {
+                savedGames[existingIndex] = game;
+            } else {
+                savedGames.push(game);
+            }
+            localStorage.setItem('jeopardy_games', JSON.stringify(savedGames));
+        };
+
+        const loadGamesFromStorage = () => {
+            const saved = localStorage.getItem('jeopardy_games');
+            let games = saved ? JSON.parse(saved) : [];
+            return games.map(g => ({
+                ...g,
+                id: g.id || `game-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`
+            }));
+        };
+
+        const deleteGameFromStorage = (gameId) => {
+            const savedGames = JSON.parse(localStorage.getItem('jeopardy_games') || '[]');
+            const filtered = savedGames.filter(g => g.id !== gameId);
+            localStorage.setItem('jeopardy_games', JSON.stringify(filtered));
+            return filtered;
+        };
+
+        // --- CUSTOM APP DIALOG MODAL (Removes Browser Alerts) ---
+        function DialogModal({ isOpen, type, title, message, onConfirm, onCancel, confirmText = "Confirm", cancelText = "Cancel" }) {
+            if (!isOpen) return null;
+            return (
+                <div className="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50 animate-fade-in">
+                    <div className="bg-slate-900 border-2 border-yellow-500 rounded-xl p-6 max-w-md w-full shadow-2xl">
+                        <h3 className="text-xl font-bold text-yellow-400 mb-2">{title}</h3>
+                        <p className="text-slate-300 text-sm mb-6 leading-relaxed">{message}</p>
+                        <div className="flex justify-end gap-3">
+                            {type === 'confirm' && (
+                                <button onClick={onCancel} className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded transition text-sm">
+                                    {cancelText}
+                                </button>
+                            )}
+                            <button onClick={onConfirm} className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-bold px-5 py-2 rounded transition text-sm">
+                                {type === 'alert' ? 'OK' : confirmText}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        // --- PRINT UTILS ---
+        const printHostKey = (game) => {
+            const printWindow = window.open('', '_blank');
+            printWindow.document.write(`
+                <html>
+                    <head>
+                        <title>Host Guide - ${game.title}</title>
+                        <style>
+                            body { font-family: sans-serif; padding: 20px; color: #111; }
+                            h1 { margin-bottom: 5px; }
+                            .grid { display: grid; grid-template-columns: repeat(${game.categories.length}, 1fr); gap: 15px; border: 2px solid #000; margin-top: 15px; }
+                            .column { border-right: 1px solid #000; display: flex; flex-direction: column; }
+                            .column:last-child { border-right: none; }
+                            .header { background: #ddd; font-weight: bold; text-align: center; padding: 12px; border-bottom: 2px solid #000; text-transform: uppercase; }
+                            .cell { padding: 10px; border-bottom: 1px solid #ccc; font-size: 11px; flex: 1; }
+                            .cell:last-child { border-bottom: none; }
+                            .points { font-weight: bold; color: #ca8a04; display: block; margin-bottom: 2px; }
+                            .q { font-style: italic; margin-bottom: 5px; }
+                            .a { font-weight: bold; color: #166534; }
+                            .final-section { margin-top: 30px; border: 3px double #000; padding: 15px; background: #fafafa; }
+                            @media print { @page { size: landscape; margin: 0.4in; } }
+                        </style>
+                    </head>
+                    <body>
+                        <h1>Jeopardy Host Key: ${game.title}</h1>
+                        <p>Keep this printed key behind your podium to evaluate answers.</p>
+                        <div class="grid">
+                            ${game.categories.map(cat => `
+                                <div class="column">
+                                    <div class="header">${cat.category}</div>
+                                    ${cat.questions.map(q => `
+                                        <div class="cell">
+                                            <span class="points">$${q.points}</span>
+                                            <div class="q">Q: ${q.q}</div>
+                                            <div class="a">A: ${q.core}</div>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            `).join('')}
+                        </div>
+                        <div class="final-section">
+                            <h3>FINAL JEOPARDY</h3>
+                            <p><strong>Category:</strong> ${game.finalJeopardy.category}</p>
+                            <p><strong>Clue/Prompt:</strong> ${game.finalJeopardy.question}</p>
+                            <p><strong>Response Target:</strong> ${game.finalJeopardy.prefix} ${game.finalJeopardy.core}?</p>
+                        </div>
+                        <script>window.print();<\/script>
+                    </body>
+                </html>
+            `);
+            printWindow.document.close();
+        };
+
+        // --- APP COMPONENTS ---
+
+        function GameEditor({ game, onSave, onSaveAsCopy, onCancel, showToast, isFullscreen, onToggleFullscreen }) {
+            const [editedGame, setEditedGame] = useState(JSON.parse(JSON.stringify(game)));
+            const [activeTab, setActiveTab] = useState('categories');
+            
+            // AI Generator State
+            const [boardPrompt, setBoardPrompt] = useState("");
+            const [catPrompt, setCatPrompt] = useState("");
+            const [aiTargetCatIdx, setAiTargetCatIdx] = useState(null);
+            const [isGenerating, setIsGenerating] = useState(false);
+
+            const handleCategoryChange = (catIdx, value) => {
+                const newCats = [...editedGame.categories];
+                newCats[catIdx].category = value;
+                setEditedGame({...editedGame, categories: newCats});
+            };
+
+            const handleQuestionChange = (catIdx, qIdx, field, value) => {
+                const newCats = [...editedGame.categories];
+                newCats[catIdx].questions[qIdx][field] = value;
+                setEditedGame({...editedGame, categories: newCats});
+            };
+
+            const handleFinalChange = (field, value) => {
+                setEditedGame({...editedGame, finalJeopardy: {...editedGame.finalJeopardy, [field]: value}});
+            };
+
+            // --- LLM GENERATE FULL BOARD ---
+            const handleAIFullBoardGenerate = async () => {
+                if (!boardPrompt.trim()) {
+                    showToast("Please supply a theme prompt first!");
+                    return;
+                }
+                
+                const key = getActiveApiKey();
+                if (!key) {
+                    showToast("API Key missing! Add one in setup screen settings ⚙️.");
+                    return;
+                }
+
+                setIsGenerating(true);
+                showToast("Gemini is constructing your custom board...");
+
+                const schema = {
+                    type: "OBJECT",
+                    properties: {
+                        title: { type: "STRING" },
+                        categories: {
+                            type: "ARRAY",
+                            items: {
+                                type: "OBJECT",
+                                properties: {
+                                    category: { type: "STRING" },
+                                    questions: {
+                                        type: "ARRAY",
+                                        items: {
+                                            type: "OBJECT",
+                                            properties: {
+                                                points: { type: "INTEGER" },
+                                                q: { type: "STRING" },
+                                                core: { type: "STRING" },
+                                                prefix: { type: "STRING" }
+                                            },
+                                            required: ["points", "q", "core", "prefix"]
+                                        }
+                                    }
+                                },
+                                required: ["category", "questions"]
+                            }
+                        },
+                        finalJeopardy: {
+                            type: "OBJECT",
+                            properties: {
+                                category: { type: "STRING" },
+                                question: { type: "STRING" },
+                                core: { type: "STRING" },
+                                prefix: { type: "STRING" }
+                            },
+                            required: ["category", "question", "core", "prefix"]
+                        }
+                    },
+                    required: ["title", "categories", "finalJeopardy"]
+                };
+
+                const systemPrompt = "You are an expert trivia writer. Create a fun, engaging, and historically or scientifically accurate Jeopardy board themed precisely around the user's prompt. There must be exactly 5 categories, and each category must have exactly 5 questions with point values: 100, 200, 300, 400, and 500, increasing logically in difficulty.";
+                const prompt = `Create a Jeopardy board about this theme/topic: "${boardPrompt}". Return complete question prompts, direct answer cores, and correct query prefixes (e.g., 'Who is', 'What is', 'Where is').`;
+
+                try {
+                    const result = await callGeminiAPI(prompt, systemPrompt, schema);
+                    
+                    // Format and sanitize output to match game rules
+                    const sanitizedCategories = result.categories.slice(0, 5).map(cat => {
+                        const sortedQs = cat.questions.sort((a,b) => a.points - b.points).slice(0,5);
+                        // Ensure point values are clean
+                        sortedQs.forEach((q, idx) => {
+                            q.points = (idx + 1) * 100;
+                        });
+                        return {
+                            category: cat.category,
+                            questions: sortedQs
+                        };
+                    });
+
+                    setEditedGame({
+                        id: `game-${Date.now()}`,
+                        title: result.title || `Theme: ${boardPrompt}`,
+                        categories: sanitizedCategories,
+                        finalJeopardy: {
+                            category: result.finalJeopardy.category || "Final Trivia",
+                            question: result.finalJeopardy.question || "",
+                            core: result.finalJeopardy.core || "",
+                            prefix: result.finalJeopardy.prefix || "What is"
+                        }
+                    });
+
+                    showToast("🎉 Full Board Created by AI!");
+                    setBoardPrompt("");
+                } catch (error) {
+                    console.error(error);
+                    showToast(`Error: ${error.message || "Failed to contact Gemini API"}`);
+                } finally {
+                    setIsGenerating(false);
+                }
+            };
+
+            // --- LLM GENERATE SINGLE CATEGORY ---
+            const handleAISingleCategoryGenerate = async () => {
+                if (!catPrompt.trim() || aiTargetCatIdx === null) {
+                    showToast("Please supply a topic and select a column!");
+                    return;
+                }
+
+                const key = getActiveApiKey();
+                if (!key) {
+                    showToast("API Key missing! Add one in setup settings.");
+                    return;
+                }
+
+                setIsGenerating(true);
+                showToast(`Gemini is writing Category ${aiTargetCatIdx + 1} clues...`);
+
+                const schema = {
+                    type: "OBJECT",
+                    properties: {
+                        category: { type: "STRING" },
+                        questions: {
+                            type: "ARRAY",
+                            items: {
+                                type: "OBJECT",
+                                properties: {
+                                    points: { type: "INTEGER" },
+                                    q: { type: "STRING" },
+                                    core: { type: "STRING" },
+                                    prefix: { type: "STRING" }
+                                },
+                                required: ["points", "q", "core", "prefix"]
+                            }
+                        }
+                    },
+                    required: ["category", "questions"]
+                };
+
+                const systemPrompt = "You are an expert trivia developer. Generate a single category with exactly 5 questions worth 100, 200, 300, 400, and 500 points in increasing difficulty.";
+                const prompt = `Create a single Jeopardy category themed around: "${catPrompt}". Create engaging clues, core answers, and appropriate grammar prefixes (like "Who is" or "What are").`;
+
+                try {
+                    const result = await callGeminiAPI(prompt, systemPrompt, schema);
+                    
+                    const sortedQs = result.questions.sort((a,b) => a.points - b.points).slice(0, 5);
+                    sortedQs.forEach((q, idx) => {
+                        q.points = (idx + 1) * 100;
+                    });
+
+                    const newCats = [...editedGame.categories];
+                    newCats[aiTargetCatIdx] = {
+                        category: result.category || catPrompt,
+                        questions: sortedQs
+                    };
+
+                    setEditedGame({ ...editedGame, categories: newCats });
+                    showToast("🎉 Category Updated with AI Content!");
+                    setCatPrompt("");
+                    setAiTargetCatIdx(null);
+                } catch (error) {
+                    console.error(error);
+                    showToast(`Error: ${error.message}`);
+                } finally {
+                    setIsGenerating(false);
+                }
+            };
+
+            const handleDownloadTemplate = () => {
+                const csv = "Category,Points,Question,Core Answer,Prefix\nCategory 1,100,\"Sample Question Here\",\"Sample Answer\",\"What is\"\nFinal: Sample Category,0,\"Sample Final Jeopardy Clue Here\",\"Sample Final Answer\",\"What is\"";
+                const link = document.createElement("a");
+                link.href = "data:text/csv;charset=utf-8," + encodeURI(csv);
+                link.download = "jeopardy_template.csv";
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+                showToast("Template Downloaded!");
+            };
+
+            const handleCSVUpload = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                Papa.parse(file, {
+                    complete: (results) => {
+                        const data = results.data;
+                        const newCats = [];
+                        const categoriesMap = {};
+                        let tempFinal = { ...editedGame.finalJeopardy };
+                        let startIdx = (data[0] && data[0][0].toLowerCase().includes('category')) ? 1 : 0;
+                        
+                        for(let i=startIdx; i<data.length; i++) {
+                            const row = data[i];
+                            if(row.length < 3 || !row[0]) continue;
+                            const catName = row[0].trim();
+                            
+                            // Check if this row is designated for Final Jeopardy
+                            if (catName.toLowerCase().startsWith('final:') || catName.toLowerCase() === 'final jeopardy') {
+                                const finalCategory = catName.toLowerCase().startsWith('final:') 
+                                    ? catName.substring(6).trim() 
+                                    : "Final Category";
+                                tempFinal = {
+                                    category: finalCategory,
+                                    question: row[2] || "",
+                                    core: row[3] || "Answer",
+                                    prefix: row[4] || "What is"
+                                };
+                                continue; // Avoid adding this to standard categories
+                            }
+
+                            if(!categoriesMap[catName]) categoriesMap[catName] = [];
+                            categoriesMap[catName].push({
+                                points: parseInt(row[1]) || 100,
+                                q: row[2] || "",
+                                core: row[3] || "Answer",
+                                prefix: row[4] || "What is"
+                            });
+                        }
+                        
+                        Object.keys(categoriesMap).slice(0, 5).forEach(catName => {
+                            const qs = categoriesMap[catName].sort((a,b) => a.points - b.points).slice(0, 5);
+                            while(qs.length < 5) {
+                                qs.push({points:(qs.length+1)*100, q:"Placeholder Question", core:"Answer", prefix:"What is"});
+                            }
+                            newCats.push({category: catName, questions: qs});
+                        });
+                        
+                        if (newCats.length > 0) {
+                            setEditedGame({
+                                ...editedGame, 
+                                categories: newCats,
+                                finalJeopardy: tempFinal
+                            });
+                            showToast("CSV imported successfully!");
+                        } else {
+                            showToast("No valid categories found in CSV!");
+                        }
+                    }
+                });
+            };
+
+            return (
+                <div className="flex flex-col h-full bg-slate-950 text-white p-4 overflow-hidden">
+                    {/* Action Header */}
+                    <div className="flex flex-col md:flex-row justify-between mb-4 items-center gap-2">
+                        <div className="flex items-center gap-3">
+                            <h2 className="text-2xl font-black text-yellow-400 tracking-wide">Board Editor</h2>
+                            <span className="text-xs bg-slate-800 text-slate-300 px-2 py-1 rounded">Local Storage</span>
+                        </div>
+                        <div className="flex flex-wrap gap-2 justify-center">
+                            <button onClick={onToggleFullscreen} className="bg-slate-800 hover:bg-slate-700 px-3 py-1.5 rounded transition text-xs font-bold text-yellow-400">
+                                {isFullscreen ? "🗗 Exit Fullscreen" : "⛶ Fullscreen"}
+                            </button>
+                            <button onClick={handleDownloadTemplate} className="bg-purple-700 hover:bg-purple-600 px-3 py-1.5 rounded transition text-xs font-bold">Download Blank CSV Format</button>
+                            <label className="bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded cursor-pointer transition text-xs flex items-center font-bold">
+                                Import CSV <input type="file" onChange={handleCSVUpload} className="hidden" />
+                            </label>
+                            <button onClick={onCancel} className="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded transition text-xs font-bold">Cancel</button>
+                            <button onClick={() => onSaveAsCopy(editedGame)} className="bg-teal-700 hover:bg-teal-600 px-3 py-1.5 rounded transition text-xs font-bold">Save Copy</button>
+                            <button onClick={() => onSave(editedGame)} className="bg-green-600 hover:bg-green-500 px-5 py-1.5 rounded transition font-black text-xs text-slate-950 uppercase tracking-wider">Save Game</button>
+                        </div>
+                    </div>
+
+                    {/* AI Full Board Generation Dashboard */}
+                    <div className="mb-4 bg-slate-900 border border-yellow-500/30 p-3 rounded-xl flex flex-col md:flex-row items-center justify-between gap-3 shadow-lg">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xl">✨</span>
+                            <div>
+                                <h4 className="text-xs font-black uppercase text-yellow-400 tracking-wider">AI Board Builder</h4>
+                                <p className="text-[10px] text-slate-400">Generate a full custom 25-clue board in seconds with Gemini</p>
+                            </div>
+                        </div>
+                        <div className="flex flex-grow max-w-xl w-full gap-2">
+                            <input 
+                                type="text"
+                                value={boardPrompt}
+                                onChange={(e) => setBoardPrompt(e.target.value)}
+                                placeholder="Topic (e.g. World War II, MCU Movies, 10th Grade Physics)..." 
+                                className="flex-grow p-1.5 text-xs text-slate-950 font-bold rounded border-2 border-yellow-500/50"
+                                disabled={isGenerating}
+                            />
+                            <button 
+                                onClick={handleAIFullBoardGenerate}
+                                disabled={isGenerating}
+                                className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-black text-xs px-4 py-1.5 rounded transition flex items-center gap-1.5 shrink-0"
+                            >
+                                {isGenerating ? "Cloning..." : "✨ Auto-Generate"}
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div className="mb-4">
+                        <label className="block text-xs font-bold text-yellow-400 mb-1 uppercase tracking-widest">Game Configuration Title</label>
+                        <input value={editedGame.title} onChange={e => setEditedGame({...editedGame, title: e.target.value})} className="edit-input w-full p-2.5 text-black text-lg font-bold rounded shadow-inner" placeholder="Game Title (e.g., Biology Review)" />
+                    </div>
+
+                    <div className="flex border-b border-slate-800 mb-4">
+                        <button className={`px-5 py-2.5 rounded-t-lg transition font-bold text-sm ${activeTab==='categories' ? 'bg-yellow-500 text-slate-950 font-black' : 'bg-slate-900 hover:bg-slate-800 text-slate-400'}`} onClick={() => setActiveTab('categories')}>Categories (5x5)</button>
+                        <button className={`px-5 py-2.5 rounded-t-lg transition font-bold text-sm ${activeTab==='final' ? 'bg-yellow-500 text-slate-950 font-black' : 'bg-slate-900 hover:bg-slate-800 text-slate-400'}`} onClick={() => setActiveTab('final')}>Final Jeopardy Clue</button>
+                    </div>
+
+                    <div className="flex-grow overflow-y-auto pb-20">
+                        {activeTab === 'categories' ? (
+                            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+                                {editedGame.categories.map((cat, i) => (
+                                    <div key={i} className="bg-slate-900 p-3 rounded-lg border border-slate-800 shadow-xl flex flex-col gap-3 relative">
+                                        
+                                        {/* Row AI generation controls */}
+                                        <div className="bg-slate-950 p-2 rounded border border-slate-800">
+                                            <div className="flex items-center justify-between mb-1">
+                                                <label className="block text-[10px] text-yellow-500 font-bold uppercase tracking-widest">Category {i+1}</label>
+                                                <button 
+                                                    onClick={() => setAiTargetCatIdx(aiTargetCatIdx === i ? null : i)}
+                                                    className="text-xs bg-yellow-500/10 hover:bg-yellow-500/30 text-yellow-400 font-bold px-1.5 py-0.5 rounded transition flex items-center gap-1"
+                                                >
+                                                    ✨ AI
+                                                </button>
+                                            </div>
+                                            <input value={cat.category} onChange={e => handleCategoryChange(i, e.target.value)} className="edit-input w-full text-black font-bold text-center rounded p-1 text-sm animate-fade-in" placeholder="Category Name" />
+                                        </div>
+
+                                        {/* AI single column builder form overlay */}
+                                        {aiTargetCatIdx === i && (
+                                            <div className="bg-slate-950 border border-yellow-500 p-2.5 rounded-lg text-xs space-y-2 animate-fade-in">
+                                                <p className="font-bold text-yellow-400">Generate Category Topic:</p>
+                                                <input 
+                                                    type="text" 
+                                                    value={catPrompt}
+                                                    onChange={(e) => setCatPrompt(e.target.value)}
+                                                    placeholder="Topic theme (e.g. Zoology, Chemistry)..."
+                                                    className="w-full text-slate-950 font-semibold p-1 rounded"
+                                                />
+                                                <div className="flex gap-2">
+                                                    <button onClick={handleAISingleCategoryGenerate} className="flex-1 bg-yellow-500 hover:bg-yellow-400 text-slate-950 py-1 rounded font-bold">✨ Gen Column</button>
+                                                    <button onClick={() => setAiTargetCatIdx(null)} className="bg-slate-800 hover:bg-slate-700 px-2 rounded">Exit</button>
+                                                </div>
+                                            </div>
+                                        )}
+                                        
+                                        {cat.questions.map((q, j) => (
+                                            <div key={j} className="bg-slate-950 p-2.5 rounded border border-slate-800">
+                                                <div className="text-yellow-400 font-bold text-xs mb-1.5 flex justify-between">
+                                                    <span>Point Value</span>
+                                                    <span>${q.points}</span>
+                                                </div>
+                                                <div className="flex flex-col gap-1.5">
+                                                    <textarea value={q.q} onChange={e => handleQuestionChange(i, j, 'q', e.target.value)} className="edit-input w-full h-16 text-black text-xs rounded p-1" placeholder="Question prompt description..." />
+                                                    <input value={q.core} onChange={e => handleQuestionChange(i, j, 'core', e.target.value)} className="edit-input w-full text-black text-xs rounded p-1" placeholder="Answer Core (e.g. Gravity)" />
+                                                    <input value={q.prefix} onChange={e => handleQuestionChange(i, j, 'prefix', e.target.value)} className="edit-input w-full text-black text-[10px] rounded p-1" placeholder="Question format prefix (e.g. What is)" />
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="bg-slate-900 p-6 rounded-xl max-w-xl mx-auto mt-6 border border-slate-800 shadow-2xl">
+                                <h3 className="text-lg font-bold text-yellow-400 mb-4 text-center">Configure Final Clue</h3>
+                                <div className="space-y-4">
+                                    <div>
+                                        <label className="block mb-1 text-xs font-bold text-yellow-500 uppercase tracking-wider">Final Jeopardy Category</label>
+                                        <input value={editedGame.finalJeopardy.category} onChange={e => handleFinalChange('category', e.target.value)} className="edit-input w-full text-black p-2 rounded text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="block mb-1 text-xs font-bold text-yellow-500 uppercase tracking-wider">Question Prompt Clue</label>
+                                        <textarea value={editedGame.finalJeopardy.question} onChange={e => handleFinalChange('question', e.target.value)} className="edit-input w-full h-32 text-black p-2 rounded text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="block mb-1 text-xs font-bold text-yellow-500 uppercase tracking-wider">Correct Answer Target</label>
+                                        <input value={editedGame.finalJeopardy.core} onChange={e => handleFinalChange('core', e.target.value)} className="edit-input w-full text-black p-2 rounded text-sm" />
+                                    </div>
+                                    <div>
+                                        <label className="block mb-1 text-xs font-bold text-yellow-500 uppercase tracking-wider">Grammar Prefix Format</label>
+                                        <input value={editedGame.finalJeopardy.prefix} onChange={e => handleFinalChange('prefix', e.target.value)} className="edit-input w-full text-black p-2 rounded text-sm" placeholder="e.g. Who is / What is" />
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function SetupScreen({ onStart, onEdit, storedGames, onDeleteRequest, lastSavedTitle, showToast, isFullscreen, onToggleFullscreen }) {
+            const [numTeams, setNumTeams] = useState(2);
+            const [teamNames, setTeamNames] = useState(["Team 1", "Team 2"]);
+            const [selectedIdx, setSelectedIdx] = useState(0);
+            
+            // Custom API Key and Audio Config State
+            const [tempApiKey, setTempApiKey] = useState(getActiveApiKey());
+            const [tempAudioUrl, setTempAudioUrl] = useState(getCustomAudioUrl());
+            const [showSettings, setShowSettings] = useState(false);
+
+            const allGames = [defaultGameData, ...storedGames];
+
+            useEffect(() => {
+                if (lastSavedTitle) {
+                    const idx = allGames.map(g => g.title).lastIndexOf(lastSavedTitle);
+                    if (idx >= 0) {
+                        setSelectedIdx(idx);
+                    }
+                }
+            }, [lastSavedTitle, storedGames.length]);
+
+            useEffect(() => {
+                setTeamNames(prev => {
+                    const next = [...prev];
+                    if(numTeams > next.length) {
+                        for(let i=next.length; i<numTeams; i++) next.push(`Team ${i+1}`);
+                    } else {
+                        next.length = numTeams;
+                    }
+                    return next;
+                });
+            }, [numTeams]);
+
+            const handleSaveSettings = () => {
+                localStorage.setItem('jeopardy_gemini_api_key', tempApiKey.trim());
+                localStorage.setItem('jeopardy_custom_audio_url', tempAudioUrl.trim());
+                showToast("⚙️ Settings and Thinking Music path saved!");
+                setShowSettings(false);
+            };
+
+            return (
+                <div className="flex flex-col items-center justify-center h-full bg-slate-950 text-white p-4 relative">
+                    
+                    {/* Top Right Actions Panel (Settings & Fullscreen) */}
+                    <div className="absolute top-4 right-4 flex items-center gap-2">
+                        <button 
+                            onClick={onToggleFullscreen}
+                            className="bg-slate-900 border border-slate-800 hover:border-yellow-500 px-4 py-2.5 rounded-full transition text-sm font-bold text-yellow-400 flex items-center gap-1.5"
+                            title="Toggle Screen Mode"
+                        >
+                            <span>{isFullscreen ? "🗗" : "⛶"}</span>
+                            <span className="hidden sm:inline text-xs">{isFullscreen ? "Exit Fullscreen" : "Fullscreen"}</span>
+                        </button>
+                        <button 
+                            onClick={() => setShowSettings(!showSettings)}
+                            className="bg-slate-900 border border-slate-800 hover:border-yellow-500 p-2.5 rounded-full transition text-xl"
+                            title="API & Audio Settings"
+                        >
+                            ⚙️
+                        </button>
+                    </div>
+
+                    <h1 className="text-6xl md:text-9xl jeopardy-font mb-4 text-yellow-400 text-center logo-glow animate-fade-in">JEOPARDY!</h1>
+                    
+                    {showSettings ? (
+                        <div className="bg-slate-900 p-6 rounded-2xl border-2 border-yellow-500 w-full max-w-xl shadow-2xl animate-fade-in mb-6 z-10">
+                            <h3 className="text-lg font-bold text-yellow-400 mb-2 uppercase tracking-wide">⚙️ Game Configuration</h3>
+                            
+                            <div className="space-y-4">
+                                <div>
+                                    <label className="block text-xs text-yellow-500 font-bold mb-1 uppercase">Gemini API Key</label>
+                                    <input 
+                                        type="password"
+                                        placeholder="Enter your Gemini API Key..."
+                                        value={tempApiKey}
+                                        onChange={(e) => setTempApiKey(e.target.value)}
+                                        className="w-full p-2 bg-slate-950 text-white border border-slate-800 rounded font-mono text-xs"
+                                    />
+                                </div>
+                                
+                                <div>
+                                    <label className="block text-xs text-yellow-500 font-bold mb-1 uppercase">Final Jeopardy Audio Track (MP3/Web link)</label>
+                                    <input 
+                                        type="text"
+                                        placeholder="Enter direct media URL or audio.com link..."
+                                        value={tempAudioUrl}
+                                        onChange={(e) => setTempAudioUrl(e.target.value)}
+                                        className="w-full p-2 bg-slate-950 text-white border border-slate-800 rounded font-mono text-xs"
+                                    />
+                                    <p className="text-[10px] text-slate-400 mt-1">
+                                        Defaults to your uploaded MP3 file. Plays immediately with a synth fallback if blocked or offline.
+                                    </p>
+                                </div>
+
+                                <div className="flex gap-2 justify-end pt-2">
+                                    <button onClick={() => setShowSettings(false)} className="bg-slate-800 text-slate-300 px-4 py-1.5 rounded text-sm hover:bg-slate-700 transition">Cancel</button>
+                                    <button onClick={handleSaveSettings} className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 px-5 py-1.5 rounded font-bold text-sm transition">Save Settings</button>
+                                </div>
+                            </div>
+                        </div>
+                    ) : null}
+
+                    <div className="bg-slate-900 p-6 rounded-2xl shadow-2xl border border-slate-800 w-full max-w-2xl transform transition hover:scale-[1.01]">
+                        <div className="mb-6">
+                            <label className="block text-sm font-bold text-yellow-400 mb-2 uppercase tracking-wider">Select Game Board Configuration:</label>
+                            <div className="flex gap-2">
+                                <select className="flex-grow p-2.5 rounded text-black font-bold border-2 border-slate-700 shadow-inner" value={selectedIdx} onChange={e => setSelectedIdx(parseInt(e.target.value))}>
+                                    {allGames.map((g, i) => (
+                                        <option key={i} value={i}>
+                                            {g.title} {g.id === defaultGameData.id ? '(Default Blank Layout)' : '(User Config)'}
+                                        </option>
+                                    ))}
+                                </select>
+                                <button onClick={() => onEdit(allGames[selectedIdx])} className="bg-slate-700 hover:bg-slate-600 px-4 rounded text-white transition font-bold text-sm">Edit</button>
+                                <button onClick={() => printHostKey(allGames[selectedIdx])} className="bg-white hover:bg-slate-200 text-slate-950 px-3 rounded transition" title="Print Key Answers">🖨️</button>
+                                {allGames[selectedIdx].id !== defaultGameData.id && (
+                                    <button onClick={() => onDeleteRequest(allGames[selectedIdx].id)} className="bg-red-600 hover:bg-red-500 px-3.5 rounded text-white transition">✕</button>
+                                )}
+                            </div>
+                        </div>
+                        
+                        <div className="mb-6 text-center">
+                            <label className="block text-sm font-bold text-yellow-400 mb-2 uppercase tracking-wider">Select Teams Participating:</label>
+                            <div className="flex justify-center gap-3">
+                                {[2,3,4,5,6].map(n => (
+                                    <button key={n} onClick={() => setNumTeams(n)} className={`w-12 h-12 rounded-full font-bold text-xl transition transform scale-100 hover:scale-110 ${numTeams===n ? 'bg-yellow-400 text-slate-950 border-4 border-white' : 'bg-slate-800 text-white border border-slate-700'}`}>{n}</button>
+                                ))}
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4 mb-8">
+                            {teamNames.map((name, i) => (
+                                <input key={i} value={name} onChange={e => {
+                                    const n = [...teamNames]; n[i] = e.target.value; setTeamNames(n);
+                                }} className="team-input px-3 py-2 rounded font-bold text-md shadow-inner" placeholder={`Team ${i+1}`} />
+                            ))}
+                        </div>
+
+                        <button onClick={() => onStart(teamNames, allGames[selectedIdx])} className="w-full py-4 bg-gradient-to-r from-yellow-400 to-yellow-600 text-slate-950 font-black text-3xl rounded-xl uppercase shadow-lg transform transition hover:translate-y-[-2px] hover:shadow-2xl tracking-wide">
+                            Launch Board
+                        </button>
+                    </div>
+                </div>
+            );
+        }
+
+        function GameBoard({ data, completedIds, onQuestionClick, onFinalJeopardy }) {
+            return (
+                <div className="h-full flex flex-col justify-between">
+                    <div className="flex-none grid grid-cols-5 bg-slate-950 gap-1 p-1 border-b-4 border-slate-950">
+                        {data.categories.map((cat, i) => (
+                            <div key={i} className="bg-blue-900 text-center py-3 flex items-center justify-center text-yellow-100 font-bold uppercase text-xs md:text-sm lg:text-lg shadow-inner leading-tight px-1 h-14 overflow-hidden border border-blue-800">
+                                {cat.category}
+                            </div>
+                        ))}
+                    </div>
+                    
+                    <div className="flex-grow grid grid-cols-5 bg-slate-950 gap-1 p-1">
+                        {Array.from({length:5}).map((_, r) => (
+                            <React.Fragment key={r}>
+                                {data.categories.map((cat, c) => {
+                                    const qId = `${c}-${r}`;
+                                    const done = completedIds.includes(qId);
+                                    return (
+                                        <button key={c} disabled={done} onClick={() => onQuestionClick(c, r)} 
+                                            className={`flex items-center justify-center text-3xl md:text-5xl lg:text-6xl font-bold jeopardy-font transition duration-200 border border-blue-950
+                                            ${done ? 'bg-slate-950 text-slate-800 cursor-default shadow-none' : 'bg-blue-800 text-yellow-400 hover:bg-blue-700 hover:text-yellow-200 cursor-pointer shadow-inner'}`}>
+                                            {done ? '' : `$${cat.questions[r].points}`}
+                                        </button>
+                                    );
+                                })}
+                            </React.Fragment>
+                        ))}
+                    </div>
+
+                    <div className="flex-none p-3 bg-slate-950 flex justify-between items-center border-t border-slate-800">
+                        <button 
+                            onClick={onFinalJeopardy}
+                            className="px-6 py-2.5 rounded-lg font-bold uppercase transition text-sm bg-red-600 hover:bg-red-500 text-white shadow-lg cursor-pointer"
+                        >
+                            Final Jeopardy
+                        </button>
+                        <div className="text-xs text-yellow-400 font-bold">
+                            BOARD COMPLETED: {completedIds.length} / 25 TILES (Final Jeopardy is open!)
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function QuestionModal({ question, onClose, teams, onScoreChange, showToast }) {
+            const [showAnswer, setShowAnswer] = useState(false);
+
+            // Trigger custom localized correct confetti blast
+            const triggerCorrectConfetti = () => {
+                try {
+                    confetti({
+                        particleCount: 120,
+                        spread: 80,
+                        origin: { y: 0.7 }
+                    });
+                } catch (e) {
+                    console.log("Confetti script loading failed.");
+                }
+            };
+
+            return (
+                <div className="fixed inset-0 modal-overlay flex flex-col items-center justify-center p-4 z-50 overflow-y-auto">
+                    <div className="bg-blue-950 border-4 border-yellow-400 p-6 rounded-2xl max-w-3xl w-full text-center shadow-2xl animate-fade-in my-8">
+                        <div className="text-yellow-400 font-bold text-3xl mb-4 text-shadow">${question.points}</div>
+                        
+                        <div className="text-xl md:text-3xl font-semibold mb-6 px-4 leading-relaxed min-h-[100px] flex items-center justify-center">
+                            {question.q}
+                        </div>
+                        
+                        {showAnswer && (
+                            <div className="text-green-400 text-2xl md:text-3xl font-black mb-6 border-t border-blue-900 pt-4 tracking-wide">
+                                {question.prefix} {question.core}?
+                            </div>
+                        )}
+
+                        <div className="flex flex-wrap justify-center gap-3 mb-6 border-t border-blue-900 pt-4">
+                            {teams.map((team, idx) => (
+                                <div key={idx} className="bg-blue-900 p-2 rounded-lg border border-blue-800 flex flex-col items-center min-w-[120px]">
+                                    <span className="font-bold text-xs mb-1 truncate max-w-[110px] text-yellow-200">{team.name}</span>
+                                    <span className="text-xs text-slate-300 font-bold mb-2">${team.score}</span>
+                                    <div className="flex gap-1.5">
+                                        <button onClick={() => { onScoreChange(idx, question.points); playSound('correct'); triggerCorrectConfetti(); }} className="bg-green-600 hover:bg-green-500 text-white font-bold px-3 py-1.5 rounded text-xs transition">+{question.points}</button>
+                                        <button onClick={() => { onScoreChange(idx, -question.points); playSound('wrong'); }} className="bg-red-600 hover:bg-red-500 text-white font-bold px-3 py-1.5 rounded text-xs transition">-{question.points}</button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="flex justify-center gap-4">
+                            <button onClick={() => setShowAnswer(!showAnswer)} className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-black px-6 py-2 rounded-lg uppercase transition tracking-wider text-sm">
+                                {showAnswer ? "Hide Answer" : "Reveal Answer"}
+                            </button>
+                            <button onClick={onClose} className="bg-slate-700 hover:bg-slate-600 text-white font-bold px-6 py-2 rounded-lg transition text-sm">
+                                Close Clue
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            );
+        }
+
+        function FinalJeopardyModal({ data, teams, onScoreChange, onReset }) {
+            const [step, setStep] = useState('wager'); 
+            const [wagers, setWagers] = useState(teams.map(() => 0));
+            
+            // Timer and Audio configurations
+            const [timeLeft, setTimeLeft] = useState(30);
+            const [isTimerActive, setIsTimerActive] = useState(false);
+            
+            const countdownIntervalRef = useRef(null);
+            const audioIntervalRef = useRef(null);
+            const audioCtxRef = useRef(null);
+            const melodyIdxRef = useRef(0);
+
+            // Ref to local browser audio player
+            const audioElRef = useRef(null);
+
+            // Synthesizer backup sequencer loop
+            const startSynthThinkMusic = () => {
+                if (!audioCtxRef.current) {
+                    audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                const ctx = audioCtxRef.current;
+                melodyIdxRef.current = 0;
+                
+                if (audioIntervalRef.current) clearInterval(audioIntervalRef.current);
+                
+                audioIntervalRef.current = setInterval(() => {
+                    const currentNote = jeopardyMelody[melodyIdxRef.current];
+                    if (currentNote.note > 0) {
+                        playSequencedNote(currentNote.note, 'triangle', currentNote.dur, ctx);
+                    }
+                    melodyIdxRef.current = (melodyIdxRef.current + 1) % jeopardyMelody.length;
+                }, 375); // ~160 BPM loop rate
+            };
+
+            const stopSynthThinkMusic = () => {
+                if (audioIntervalRef.current) {
+                    clearInterval(audioIntervalRef.current);
+                    audioIntervalRef.current = null;
+                }
+                stopThinkMusicSynthesizer();
+            };
+
+            // Unified Play Audio controller
+            const playThinkAudio = () => {
+                const audioUrl = getCustomAudioUrl();
+                
+                // Try streaming external direct track first
+                if (audioElRef.current) {
+                    audioElRef.current.src = audioUrl;
+                    audioElRef.current.load();
+                    
+                    audioElRef.current.play()
+                        .then(() => {
+                            console.log("Playing primary audio stream: " + audioUrl);
+                        })
+                        .catch(err => {
+                            console.warn("Primary audio stream blocked/failed. Falling back to synthesizer.", err);
+                            startSynthThinkMusic();
+                        });
+                } else {
+                    startSynthThinkMusic();
+                }
+            };
+
+            const stopThinkAudio = () => {
+                if (audioElRef.current) {
+                    try {
+                        audioElRef.current.pause();
+                        audioElRef.current.currentTime = 0;
+                    } catch(e) {}
+                }
+                stopSynthThinkMusic();
+            };
+
+            // Toggle Timer & Music simultaneously
+            const handleTimerToggle = () => {
+                if (isTimerActive) {
+                    // Pause
+                    clearInterval(countdownIntervalRef.current);
+                    stopThinkAudio();
+                    setIsTimerActive(false);
+                } else {
+                    // Start
+                    setIsTimerActive(true);
+                    playThinkAudio();
+                    countdownIntervalRef.current = setInterval(() => {
+                        setTimeLeft(prev => {
+                            if (prev <= 1) {
+                                clearInterval(countdownIntervalRef.current);
+                                stopThinkAudio();
+                                setIsTimerActive(false);
+                                playSound('wrong'); // buzzer end of round
+                                return 0;
+                            }
+                            return prev - 1;
+                        });
+                    }, 1000);
+                }
+            };
+
+            const resetTimer = () => {
+                clearInterval(countdownIntervalRef.current);
+                stopThinkAudio();
+                setIsTimerActive(false);
+                setTimeLeft(30);
+            };
+
+            // Cleanup music & intervals on state transition
+            useEffect(() => {
+                return () => {
+                    clearInterval(countdownIntervalRef.current);
+                    stopThinkAudio();
+                };
+            }, [step]);
+
+            const handleWagerChange = (idx, val) => {
+                const next = [...wagers];
+                next[idx] = Math.max(0, parseInt(val) || 0);
+                setWagers(next);
+            };
+
+            const handleFinalScore = (idx, isCorrect) => {
+                const amount = wagers[idx];
+                onScoreChange(idx, isCorrect ? amount : -amount);
+                if (isCorrect) {
+                    playSound('correct');
+                    try {
+                        confetti({ particleCount: 50, spread: 45 });
+                    } catch (e) {}
+                } else {
+                    playSound('wrong');
+                }
+            };
+
+            const triggerWin = () => {
+                playSound('win');
+                try {
+                    confetti({ particleCount: 150, spread: 85, origin: { y: 0.6 } });
+                } catch (e) {}
+                setStep('winner');
+            };
+
+            const sortedTeams = [...teams].sort((a,b) => b.score - a.score);
+
+            return (
+                <div className="fixed inset-0 bg-slate-950 flex flex-col items-center justify-center p-4 z-50 overflow-y-auto">
+                    {/* Native Hidden fail-safe Audio element */}
+                    <audio ref={audioElRef} style={{ display: 'none' }} preload="auto" crossOrigin="anonymous"></audio>
+
+                    <div className="max-w-3xl w-full bg-slate-900 border-4 border-yellow-500 p-8 rounded-2xl shadow-2xl text-center">
+                        <h2 className="text-4xl font-bold text-yellow-400 mb-6 jeopardy-font tracking-widest logo-glow">FINAL JEOPARDY</h2>
+                        <h3 className="text-2xl text-yellow-200 mb-6 uppercase tracking-wider font-bold">Category: {data.finalJeopardy.category}</h3>
+
+                        {step === 'wager' && (
+                            <div>
+                                <p className="text-sm mb-4 text-slate-300">Enter team wagers before launching the final clue prompt:</p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+                                    {teams.map((team, idx) => (
+                                        <div key={idx} className="bg-slate-800 p-3 rounded-lg border border-slate-700 flex justify-between items-center">
+                                            <span className="font-bold text-md truncate max-w-[60%]">{team.name} (${team.score})</span>
+                                            <input type="number" value={wagers[idx]} onChange={e => handleWagerChange(idx, e.target.value)} className="w-24 p-1.5 text-black font-bold rounded text-right" placeholder="0" />
+                                        </div>
+                                    ))}
+                                </div>
+                                <button onClick={() => setStep('question')} className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-black px-8 py-3 rounded-xl text-lg uppercase tracking-wider transition">Reveal Question Clue</button>
+                            </div>
+                        )}
+
+                        {step === 'question' && (
+                            <div className="flex flex-col items-center">
+                                <p className="text-2xl md:text-3xl font-semibold mb-8 border-b border-slate-800 pb-6 leading-relaxed">"{data.finalJeopardy.question}"</p>
+                                
+                                {/* 30-Second Timer Panel */}
+                                <div className="bg-slate-950 border border-slate-800 rounded-xl p-5 w-full max-w-sm mb-8 text-center flex flex-col items-center shadow-lg">
+                                    <div className="text-[10px] font-black uppercase text-yellow-400 tracking-widest mb-1.5">Game Clock & Music Player</div>
+                                    <div className={`text-6xl font-black font-mono transition duration-300 ${timeLeft <= 5 ? 'text-red-500 animate-pulse' : 'text-yellow-400'}`}>
+                                        0:{timeLeft < 10 ? `0${timeLeft}` : timeLeft}
+                                    </div>
+                                    <div className="flex gap-2.5 mt-4 w-full">
+                                        <button 
+                                            onClick={handleTimerToggle}
+                                            className={`flex-1 py-2 rounded-lg font-black text-xs uppercase tracking-wider transition ${isTimerActive ? 'bg-red-600 hover:bg-red-500 text-white animate-pulse' : 'bg-green-600 hover:bg-green-500 text-white'}`}
+                                        >
+                                            {isTimerActive ? "⏸️ Pause Clock" : "▶️ Start Music & Clock"}
+                                        </button>
+                                        <button 
+                                            onClick={resetTimer}
+                                            className="bg-slate-800 hover:bg-slate-700 text-slate-300 px-4 py-2 rounded-lg text-xs font-bold transition"
+                                        >
+                                            🔄 Reset
+                                        </button>
+                                    </div>
+                                </div>
+
+                                <button onClick={() => setStep('answer')} className="bg-yellow-500 hover:bg-yellow-400 text-slate-950 font-black px-8 py-3 rounded-xl text-lg uppercase tracking-wider transition">Reveal Answer</button>
+                            </div>
+                        )}
+
+                        {step === 'answer' && (
+                            <div>
+                                <p className="text-2xl md:text-3xl font-semibold mb-4 text-slate-300">"{data.finalJeopardy.question}"</p>
+                                <p className="text-3xl font-black text-green-400 mb-8 border-t border-slate-800 pt-6 tracking-wide">{data.finalJeopardy.prefix} {data.finalJeopardy.core}?</p>
+                                
+                                <p className="text-xs text-slate-400 mb-4">Select team responses:</p>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-8">
+                                    {teams.map((team, idx) => (
+                                        <div key={idx} className="bg-slate-800 p-3 rounded-lg border border-slate-700 flex flex-col gap-2">
+                                            <div className="flex justify-between font-bold text-sm">
+                                                <span className="truncate max-w-[50%]">{team.name}</span>
+                                                <span className="text-yellow-400">${team.score} (Waged: ${wagers[idx]})</span>
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button onClick={() => handleFinalScore(idx, true)} className="flex-1 bg-green-600 hover:bg-green-500 text-white font-bold py-1.5 rounded text-xs transition">Correct</button>
+                                                <button onClick={() => handleFinalScore(idx, false)} className="flex-1 bg-red-600 hover:bg-red-500 text-white font-bold py-1.5 rounded text-xs transition">Incorrect</button>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                                <button onClick={triggerWin} className="bg-purple-600 hover:bg-purple-500 text-white font-black px-8 py-3 rounded-xl text-lg uppercase tracking-wider transition">Declare Winners!</button>
+                            </div>
+                        )}
+
+                        {step === 'winner' && (
+                            <div className="animate-fade-in flex flex-col items-center">
+                                <h3 className="text-4xl font-black text-yellow-400 mb-6 jeopardy-font tracking-wider logo-glow uppercase">Final Standings</h3>
+                                
+                                <div className="flex justify-center items-end gap-3 sm:gap-6 h-64 mb-8 pt-6 px-2 w-full max-w-lg">
+                                    {/* 2nd Place */}
+                                    {sortedTeams[1] ? (
+                                        <div className="flex flex-col items-center w-24 sm:w-28 transition transform hover:scale-105 duration-300">
+                                            <span className="font-bold text-xs sm:text-sm truncate max-w-full mb-1 text-slate-300 text-shadow text-center px-1" title={sortedTeams[1].name}>
+                                                {sortedTeams[1].name}
+                                            </span>
+                                            <span className="text-xs sm:text-sm text-yellow-300 font-extrabold mb-1.5">${sortedTeams[1].score}</span>
+                                            <div className="podium-2 w-full flex flex-col items-center justify-center text-md sm:text-lg font-black text-slate-200 rounded-t-xl shadow-lg border-t border-l border-r border-slate-400/50">
+                                                <span className="text-2xl sm:text-3xl mb-1">🥈</span>
+                                                <span>2nd</span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="w-24 sm:w-28 h-20 bg-slate-900/20 border border-slate-800/40 rounded-t-xl flex items-center justify-center text-xs text-slate-600">No Entry</div>
+                                    )}
+
+                                    {/* 1st Place */}
+                                    {sortedTeams[0] ? (
+                                        <div className="flex flex-col items-center w-28 sm:w-32 transition transform hover:scale-110 duration-300">
+                                            <span className="font-bold text-sm sm:text-base truncate max-w-full mb-1 text-yellow-300 text-shadow text-center px-1 flex items-center gap-1 justify-center font-black" title={sortedTeams[0].name}>
+                                                👑 {sortedTeams[0].name}
+                                            </span>
+                                            <span className="text-sm sm:text-base text-yellow-400 font-black mb-1.5">${sortedTeams[0].score}</span>
+                                            <div className="podium-1 w-full flex flex-col items-center justify-center text-xl sm:text-2xl font-black text-slate-950 rounded-t-xl shadow-2xl border-t border-l border-r border-yellow-300/60">
+                                                <span className="text-3xl sm:text-4xl mb-1">🥇</span>
+                                                <span>1st</span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="w-28 sm:w-32 h-28 bg-slate-900/20 border border-slate-800/40 rounded-t-xl flex items-center justify-center text-xs text-slate-600">No Entry</div>
+                                    )}
+
+                                    {/* 3rd Place */}
+                                    {sortedTeams[2] ? (
+                                        <div className="flex flex-col items-center w-24 sm:w-28 transition transform hover:scale-105 duration-300">
+                                            <span className="font-bold text-xs sm:text-sm truncate max-w-full mb-1 text-amber-500 text-shadow text-center px-1" title={sortedTeams[2].name}>
+                                                {sortedTeams[2].name}
+                                            </span>
+                                            <span className="text-xs sm:text-sm text-yellow-300 font-extrabold mb-1.5">${sortedTeams[2].score}</span>
+                                            <div className="podium-3 w-full flex flex-col items-center justify-center text-md sm:text-lg font-black text-amber-100 rounded-t-xl shadow-lg border-t border-l border-r border-amber-700/50">
+                                                <span className="text-2xl sm:text-3xl mb-1">🥉</span>
+                                                <span>3rd</span>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <div className="w-24 sm:w-28 h-16 bg-slate-900/20 border border-slate-800/40 rounded-t-xl flex items-center justify-center text-xs text-slate-600">No Entry</div>
+                                    )}
+                                </div>
+
+                                {/* Additional runners-up list (Teams 4+) */}
+                                {sortedTeams.length > 3 && (
+                                    <div className="w-full max-w-md bg-slate-950/60 border border-slate-800 p-4 rounded-xl mb-8 text-left shadow-inner">
+                                        <h4 className="text-xs font-black text-slate-400 uppercase tracking-widest mb-3 text-center border-b border-slate-800 pb-2">Runners-Up</h4>
+                                        <div className="space-y-2">
+                                            {sortedTeams.slice(3).map((team, idx) => {
+                                                const placement = idx + 4;
+                                                return (
+                                                    <div key={idx} className="flex justify-between items-center text-sm px-3 py-2 bg-slate-900/50 border border-slate-800/50 rounded-lg">
+                                                        <div className="flex items-center gap-3">
+                                                            <span className="font-mono font-bold text-slate-500 w-6">{placement}th</span>
+                                                            <span className="font-bold text-slate-200 truncate max-w-[200px]">{team.name}</span>
+                                                        </div>
+                                                        <span className="font-mono font-semibold text-yellow-500">${team.score}</span>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
+                                <button onClick={onReset} className="bg-slate-700 hover:bg-slate-600 text-white font-bold px-8 py-3 rounded-xl transition shadow-lg text-sm uppercase tracking-wide">
+                                    Return to Main Screen
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            );
+        }
+
+        function ScoreboardPanel({ teams }) {
+            return (
+                <div className="bg-slate-950 p-3 border-t-2 border-slate-900 flex justify-around items-center flex-wrap gap-2">
+                    {teams.map((team, idx) => (
+                        <div key={idx} className="bg-slate-900 border border-slate-800 rounded-xl px-5 py-2.5 text-center min-w-[140px] shadow-md">
+                            <div className="font-bold text-xs text-yellow-200 truncate max-w-[130px]">{team.name}</div>
+                            <div className="text-2xl font-black text-white tracking-wide text-shadow">${team.score}</div>
+                        </div>
+                    ))}
+                </div>
+            );
+        }
+
+        function App() {
+            const [screen, setScreen] = useState('setup'); 
+            const [storedGames, setStoredGames] = useState([]);
+            const [currentGame, setCurrentGame] = useState(defaultGameData);
+            const [lastSavedTitle, setLastSavedTitle] = useState('');
+            
+            // App state
+            const [teams, setTeams] = useState([]);
+            const [completedIds, setCompletedIds] = useState([]);
+            const [activeQuestion, setActiveQuestion] = useState(null);
+            const [showFinal, setShowFinal] = useState(false);
+            const [isFullscreen, setIsFullscreen] = useState(false);
+
+            // Modal system state
+            const [dialog, setDialog] = useState({ isOpen: false, type: 'alert', title: '', message: '', onConfirm: () => {} });
+            
+            // Toast Notification State
+            const [toastMessage, setToastMessage] = useState(null);
+
+            useEffect(() => {
+                setStoredGames(loadGamesFromStorage());
+                
+                const handleFullscreenChange = () => {
+                    setIsFullscreen(!!(document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement));
+                };
+
+                document.addEventListener('fullscreenchange', handleFullscreenChange);
+                document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+                document.addEventListener('msfullscreenchange', handleFullscreenChange);
+
+                return () => {
+                    document.removeEventListener('fullscreenchange', handleFullscreenChange);
+                    document.removeEventListener('webkitfullscreenchange', handleFullscreenChange);
+                    document.removeEventListener('msfullscreenchange', handleFullscreenChange);
+                };
+            }, []);
+
+            const toggleFullscreen = () => {
+                try {
+                    if (!document.fullscreenElement && !document.webkitFullscreenElement && !document.msFullscreenElement) {
+                        const docEl = document.documentElement;
+                        if (docEl.requestFullscreen) docEl.requestFullscreen();
+                        else if (docEl.webkitRequestFullscreen) docEl.webkitRequestFullscreen();
+                        else if (docEl.msRequestFullscreen) docEl.msRequestFullscreen();
+                    } else {
+                        if (document.exitFullscreen) document.exitFullscreen();
+                        else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                        else if (document.msExitFullscreen) document.msExitFullscreen();
+                    }
+                } catch (e) {
+                    showToast("Fullscreen mode restricted by the host frame container.");
+                }
+            };
+
+            const showToast = (msg) => {
+                setToastMessage(msg);
+                setTimeout(() => setToastMessage(null), 4000);
+            };
+
+            const triggerDialog = (type, title, message, onConfirm) => {
+                setDialog({
+                    isOpen: true,
+                    type,
+                    title,
+                    message,
+                    onConfirm: () => {
+                        onConfirm();
+                        setDialog(prev => ({ ...prev, isOpen: false }));
+                    }
+                });
+            };
+
+            const handleStartGame = (teamNames, selectedGame) => {
+                setTeams(teamNames.map(name => ({ name, score: 0 })));
+                setCurrentGame(selectedGame);
+                setCompletedIds([]);
+                setShowFinal(false);
+                setScreen('board');
+            };
+
+            const handleQuestionClick = (c, r) => {
+                const question = currentGame.categories[c].questions[r];
+                setActiveQuestion({ c, r, ...question });
+            };
+
+            const handleQuestionClose = () => {
+                setCompletedIds([...completedIds, `${activeQuestion.c}-${activeQuestion.r}`]);
+                setActiveQuestion(null);
+            };
+
+            const handleScoreChange = (teamIdx, amount) => {
+                const next = [...teams];
+                next[teamIdx].score += amount;
+                setTeams(next);
+            };
+
+            const handleSaveGame = (editedGame) => {
+                saveGameToStorage(editedGame);
+                const updated = loadGamesFromStorage();
+                setStoredGames(updated);
+                setLastSavedTitle(editedGame.title);
+                setScreen('setup');
+                showToast("Game Board Configuration Saved!");
+            };
+
+            const handleDeleteRequest = (gameId) => {
+                triggerDialog(
+                    'confirm',
+                    'Delete Game?',
+                    'Are you sure you want to permanently delete this game board layout configuration from your local storage?',
+                    () => {
+                        const remaining = deleteGameFromStorage(gameId);
+                        setStoredGames(remaining);
+                        showToast("Game deleted!");
+                    }
+                );
+            };
+
+            const handleExitRequest = () => {
+                triggerDialog(
+                    'confirm',
+                    'Abort Game?',
+                    'Are you sure you want to exit? Your active game score progress will be lost.',
+                    () => setScreen('setup')
+                );
+            };
+
+            if (screen === 'editor') {
+                return (
+                    <div className="h-full relative animate-fade-in">
+                        <GameEditor 
+                            game={currentGame} 
+                            onSave={handleSaveGame} 
+                            onSaveAsCopy={(g) => handleSaveGame({...g, id: `game-${Date.now()}`, title: g.title + " (Copy)"})}
+                            onCancel={() => setScreen('setup')} 
+                            showToast={showToast}
+                            isFullscreen={isFullscreen}
+                            onToggleFullscreen={toggleFullscreen}
+                        />
+                        {toastMessage && (
+                            <div className="fixed bottom-4 right-4 bg-yellow-500 text-slate-950 px-4 py-2.5 rounded-xl font-bold shadow-2xl z-50 animate-bounce text-sm">
+                                {toastMessage}
+                            </div>
+                        )}
+                        <DialogModal 
+                            isOpen={dialog.isOpen} 
+                            type={dialog.type} 
+                            title={dialog.title} 
+                            message={dialog.message} 
+                            onConfirm={dialog.onConfirm} 
+                            onCancel={() => setDialog(prev => ({ ...prev, isOpen: false }))} 
+                        />
+                    </div>
+                );
+            }
+
+            if (screen === 'board') {
+                return (
+                    <div className="h-full flex flex-col justify-between bg-slate-950 animate-fade-in">
+                        <div className="flex-none bg-slate-900 p-2.5 flex justify-between items-center text-white border-b-2 border-slate-800 shadow-md">
+                            <h2 className="text-lg font-bold truncate max-w-[50%]">{currentGame.title}</h2>
+                            <div className="flex items-center gap-2">
+                                <button onClick={toggleFullscreen} className="bg-slate-800 hover:bg-slate-700 px-4 py-1.5 text-xs rounded-lg font-bold transition text-yellow-400">
+                                    {isFullscreen ? "🗗 Exit Fullscreen" : "⛶ Fullscreen"}
+                                </button>
+                                <button onClick={handleExitRequest} className="bg-red-700 hover:bg-red-600 px-4 py-1.5 text-xs rounded-lg font-bold transition">Exit Board</button>
+                            </div>
+                        </div>
+                        <div className="flex-grow overflow-hidden">
+                            <GameBoard 
+                                data={currentGame} 
+                                completedIds={completedIds} 
+                                onQuestionClick={handleQuestionClick}
+                                onFinalJeopardy={() => setShowFinal(true)}
+                            />
+                        </div>
+                        <div className="flex-none">
+                            <ScoreboardPanel teams={teams} />
+                        </div>
+
+                        {activeQuestion && (
+                            <QuestionModal 
+                                question={activeQuestion} 
+                                onClose={handleQuestionClose} 
+                                teams={teams} 
+                                onScoreChange={handleScoreChange} 
+                                showToast={showToast}
+                            />
+                        )}
+
+                        {showFinal && (
+                            <FinalJeopardyModal 
+                                data={currentGame} 
+                                teams={teams} 
+                                onScoreChange={handleScoreChange} 
+                                onReset={() => { setShowFinal(false); setScreen('setup'); }} 
+                            />
+                        )}
+                        
+                        {toastMessage && (
+                            <div className="fixed bottom-4 right-4 bg-yellow-500 text-slate-950 px-4 py-2.5 rounded-xl font-bold shadow-2xl z-50 animate-bounce text-sm">
+                                {toastMessage}
+                            </div>
+                        )}
+                        
+                        <DialogModal 
+                            isOpen={dialog.isOpen} 
+                            type={dialog.type} 
+                            title={dialog.title} 
+                            message={dialog.message} 
+                            onConfirm={dialog.onConfirm} 
+                            onCancel={() => setDialog(prev => ({ ...prev, isOpen: false }))} 
+                        />
+                    </div>
+                );
+            }
+
+            return (
+                <div className="h-full relative animate-fade-in">
+                    <SetupScreen 
+                        onStart={handleStartGame} 
+                        onEdit={(game) => { setCurrentGame(game); setScreen('editor'); }} 
+                        storedGames={storedGames} 
+                        onDeleteRequest={handleDeleteRequest}
+                        lastSavedTitle={lastSavedTitle}
+                        showToast={showToast}
+                        isFullscreen={isFullscreen}
+                        onToggleFullscreen={toggleFullscreen}
+                    />
+                    {toastMessage && (
+                        <div className="fixed bottom-4 right-4 bg-yellow-500 text-slate-950 px-4 py-2.5 rounded-xl font-bold shadow-2xl z-50 animate-bounce text-sm">
+                            {toastMessage}
+                        </div>
+                    )}
+                    <DialogModal 
+                        isOpen={dialog.isOpen} 
+                        type={dialog.type} 
+                        title={dialog.title} 
+                        message={dialog.message} 
+                        onConfirm={dialog.onConfirm} 
+                        onCancel={() => setDialog(prev => ({ ...prev, isOpen: false }))} 
+                    />
+                </div>
+            );
+        }
+
+        ReactDOM.render(<App />, document.getElementById('root'));
+    </script>
+</body>
+</html>
