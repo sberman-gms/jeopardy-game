@@ -93,7 +93,8 @@
         };
 
         const getCustomAudioUrl = () => {
-            return localStorage.getItem('jeopardy_custom_audio_url') || 'http://googleusercontent.com/file_content/1';
+            // Uses the user uploaded mp3 file as the absolute default direct path
+            return localStorage.getItem('jeopardy_custom_audio_url') || 'jeopardy-final-jeopardy-thinking-music (1).mp3';
         };
 
         const fetchWithRetry = async (url, options, retries = 5, delay = 1000) => {
