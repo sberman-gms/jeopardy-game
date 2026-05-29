@@ -291,7 +291,83 @@
             };
         };
 
-        const defaultGameData = generateBlankTemplate();
+        // =========================================================================
+        // 🎴 CUSTOM PRE-LOADED GAME CONFIGURATION
+        // =========================================================================
+        // When you embed this game, visitors won't have access to your computer's
+        // browser Local Storage. To make sure your custom trivia loads automatically
+        // for everyone, you can paste your custom game data here!
+        //
+        // HOW TO GET YOUR DATA:
+        // 1. Build your board in the Editor inside the preview.
+        // 2. Click "Save Game".
+        // 3. To hardcode it forever, copy the JSON configuration or replace this
+        //    variable with your custom game object structure.
+        // =========================================================================
+        const customPreloadedGame = {
+            id: 'preloaded-reconstruction',
+            title: "Reconstruction Era Jeopardy",
+            categories: [
+                {
+                    category: "The Reconstruction Amendments",
+                    questions: [
+                        { points: 200, q: "This amendment officially outlawed slavery and involuntary servitude across the entire United States.", core: "the 13th Amendment?", prefix: "What is" },
+                        { points: 400, q: "This amendment defined citizenship to include all persons born or naturalized in the U.S. and guaranteed \"equal protection under the law\".", core: "the 14th Amendment?", prefix: "What is" },
+                        { points: 600, q: "This amendment declared that the right of citizens to vote cannot be denied based on race, color, or previous condition of servitude.", core: "the 15th Amendment?", prefix: "What is" },
+                        { points: 800, q: "The Citizenship Clause of the 14th Amendment was designed to directly overturn this 1857 Supreme Court decision.", core: "Dred Scott v. Sandford?", prefix: "What is" },
+                        { points: 1000, q: "Although it guarantees fair treatment, the 14th Amendment’s Equal Protection Clause only restricts the actions of state and local governments, meaning it does not legally apply to these entities.", core: "private businesses?", prefix: "What are" }
+                    ]
+                },
+                {
+                    category: "Politics and Conflict",
+                    questions: [
+                        { points: 200, q: "His 1865 assassination left the difficult task of Reconstruction to Andrew Johnson.", core: "Abraham Lincoln?", prefix: "Who is" },
+                        { points: 400, q: "Radical Republicans in 1865 strongly opposed Andrew Johnson's Reconstruction plans because they felt they were too much of this.", core: "\"too lenient\"?", prefix: "What is" },
+                        { points: 600, q: "This 1867 Act dissolved Southern state governments and divided the South into five military districts.", core: "the Reconstruction Act?", prefix: "What is" },
+                        { points: 800, q: "This was the official reason given by the House of Representatives for impeaching President Andrew Johnson in 1868.", core: "violating the Tenure of Office Act?", prefix: "What is" },
+                        { points: 1000, q: "This group of Congressmen, led by Thaddeus Stevens and Charles Sumner, wanted to destroy the political power of former slaveholders.", core: "Radical Republicans?", prefix: "Who are" }
+                    ]
+                },
+                {
+                    category: "Black Codes and Jim Crow",
+                    questions: [
+                        { points: 200, q: "Under this system, landless farmers (mostly former slaves) worked a section of land in exchange for a portion of the harvest.", core: "sharecropping?", prefix: "What is" },
+                        { points: 400, q: "These local and state laws passed in the South immediately after the Civil War severely restricted African Americans' freedom and compelled them to work in a labor economy based on low wages.", core: "Black Codes?", prefix: "What are" },
+                        { points: 600, q: "These laws, named after a popular minstrel show character, legally segregated whites and blacks in public spaces throughout the South.", core: "Jim Crow laws?", prefix: "What are" },
+                        { points: 800, q: "Southern states used these taxes, along with literacy tests, as a legal loophole to prevent African Americans' from voting without violating the 15th Amendment.", core: "poll taxes?", prefix: "What are" },
+                        { points: 1000, q: "Under the Black Codes, any African American without a signed one of these agreements with a white employer could be arrested for \"vagrancy\" and have their labor auctioned off.", core: "a labor contract?", prefix: "What is" }
+                    ]
+                },
+                {
+                    category: "Economic Reconstruction",
+                    questions: [
+                        { points: 200, q: "Established by Congress in 1865, this agency provided food, housing, medical aid, and established schools for newly freed African Americans.", core: "the Freedmen's Bureau?", prefix: "What is" },
+                        { points: 400, q: "This phrase refers to the widespread rumor and expectation among freed people that the federal government would redistribute Southern plantation land to them.", core: "\"forty acres and a mule\"?", prefix: "What is" },
+                        { points: 600, q: "In 1865, Union General William Tecumseh Sherman issued this order, which set aside a large swath of the Southern coast for settlement by newly freed families.", core: "Special Field Order No. 15?", prefix: "What is" },
+                        { points: 800, q: "The vast majority of Southern rail lines, bridges, and cities lay in ruins after the war, largely due to this Union military strategy of total destruction.", core: "\"scorched earth\" strategy?", prefix: "What is" },
+                        { points: 1000, q: "According to economic data, the decline of this specific industry hurt the South the most because they held 84% of the nation's large farms.", core: "agriculture?", prefix: "What is" }
+                    ]
+                },
+                {
+                    category: "Names and Terms",
+                    questions: [
+                        { points: 200, q: "This derogatory term was used by white Southern conservatives for fellow Southerners who joined the Republican party.", core: "scalawags?", prefix: "What are" },
+                        { points: 400, q: "This derogatory term described Northerners who moved south after the war, often depicted as opportunists looking to steal tax dollars.", core: "carpetbaggers?", prefix: "What are" },
+                        { points: 600, q: "In this 1896 case, the Supreme Court ruled that segregation was legal as long as facilities for blacks and whites were \"equal\".", core: "Plessy v. Ferguson?", prefix: "What is" },
+                        { points: 800, q: "Reconstruction officially ended because of this 1877 agreement that removed federal troops from the South.", core: "the Compromise of 1877?", prefix: "What is" },
+                        { points: 1000, q: "To combat secret societies and midnight violence, Congress passed this 1870 law making it a federal crime to \"go in disguise upon the public highway\" to intimidate citizens from voting.", core: "the Enforcement Act?", prefix: "What is" }
+                    ]
+                }
+            ],
+            finalJeopardy: {
+                category: "Historical Speeches",
+                question: "In his 1865 speech \"What the Black Man Wants,\" this famous abolitionist argued that true freedom meant the government should \"Do nothing with us!... give him a chance to stand on his own legs!\"",
+                core: "Frederick Douglass",
+                prefix: "Who is"
+            }
+        };
+
+        const defaultGameData = customPreloadedGame || generateBlankTemplate();
 
         // --- STORAGE UTILS ---
         const saveGameToStorage = (game) => {
@@ -675,7 +751,7 @@
                             </button>
                             <button onClick={handleDownloadTemplate} className="bg-purple-700 hover:bg-purple-600 px-3 py-1.5 rounded transition text-xs font-bold">Download Blank CSV Format</button>
                             <label className="bg-blue-600 hover:bg-blue-500 px-3 py-1.5 rounded cursor-pointer transition text-xs flex items-center font-bold">
-                                Import CSV <input type="file" onChange={handleCSVUpload} className="hidden" />
+                                import CSV <input type="file" onChange={handleCSVUpload} className="hidden" />
                             </label>
                             <button onClick={onCancel} className="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded transition text-xs font-bold">Cancel</button>
                             <button onClick={() => onSaveAsCopy(editedGame)} className="bg-teal-700 hover:bg-teal-600 px-3 py-1.5 rounded transition text-xs font-bold">Save Copy</button>
@@ -1012,15 +1088,18 @@
             return (
                 <div className="fixed inset-0 modal-overlay flex flex-col items-center justify-center p-4 z-50 overflow-y-auto">
                     <div className="bg-blue-950 border-4 border-yellow-400 p-6 rounded-2xl max-w-3xl w-full text-center shadow-2xl animate-fade-in my-8">
-                        <div className="text-yellow-400 font-bold text-3xl mb-4 text-shadow">${question.points}</div>
+                        {/* CATEGORY & VALUE SECTION DISPLAYED ON CARD */}
+                        <div className="text-yellow-400 font-bold text-lg sm:text-2xl mb-4 text-shadow uppercase tracking-wider">
+                            {question.categoryName} • ${question.points}
+                        </div>
                         
-                        <div className="text-xl md:text-3xl font-semibold mb-6 px-4 leading-relaxed min-h-[100px] flex items-center justify-center">
-                            {question.q}
+                        <div className="text-xl md:text-3xl font-semibold mb-6 px-4 leading-relaxed min-h-[100px] flex items-center justify-center font-serif italic text-blue-100">
+                            "{question.q}"
                         </div>
                         
                         {showAnswer && (
-                            <div className="text-green-400 text-2xl md:text-3xl font-black mb-6 border-t border-blue-900 pt-4 tracking-wide">
-                                {question.prefix} {question.core}?
+                            <div className="text-green-400 text-2xl md:text-3xl font-black mb-6 border-t border-blue-900 pt-4 tracking-wide uppercase">
+                                {question.prefix} {question.core}
                             </div>
                         )}
 
@@ -1452,8 +1531,9 @@
             };
 
             const handleQuestionClick = (c, r) => {
+                const categoryName = currentGame.categories[c].category;
                 const question = currentGame.categories[c].questions[r];
-                setActiveQuestion({ c, r, ...question });
+                setActiveQuestion({ c, r, categoryName, ...question });
             };
 
             const handleQuestionClose = () => {
